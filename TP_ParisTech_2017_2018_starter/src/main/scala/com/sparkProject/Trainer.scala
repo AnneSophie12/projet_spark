@@ -31,25 +31,13 @@ object Trainer {
       .appName("TP_spark")
       .getOrCreate()
 
-    /*******************************************************************************
-      *
-      *       TP 4-5
-      *
-      *       - lire le fichier sauvegarder précédemment
-      *       - construire les Stages du pipeline, puis les assembler
-      *       - trouver les meilleurs hyperparamètres pour l'entraînement du pipeline avec une grid-search
-      *       - Sauvegarder le pipeline entraîné
-      *
-      *       if problems with unimported modules => sbt plugins update
-      *
-      ********************************************************************************/
 
-   /** CHARGER LE DATASET **/
-
+   /** 1. CHARGEMENT DU DATASET **/
 
    val data = spark.read.parquet("prepared_trainingset")
 
-    /** TF-IDF **/
+
+  /** 2. UTILISATION DES DONNEES TEXTUELLES: TF-IDF **/
 
         /** 1er stage: Tokenizer **/
 
@@ -59,7 +47,6 @@ object Trainer {
       .setInputCol("text")
       .setOutputCol("tokens")
 
-    //val words=tokenizer.transform(data)
 
         /** 2eme stage: Retirer les stop words **/
 
@@ -67,26 +54,19 @@ object Trainer {
       .setInputCol(tokenizer.getOutputCol)
       .setOutputCol("filtered")
 
-    //val words_clean = remover.transform(words)
 
-        /** 3eme stage: TF-IDF **/
+        /** 3eme stage: TF-IDF avec CountVectorizer **/
 
     val cv = new CountVectorizer()
       .setInputCol(remover.getOutputCol)
       .setOutputCol("countVectorized")
 
 
-    //val cvModel = cv.fit(words_clean)
-
-    //val d = cvModel.transform(words_clean)
-
         /** 4eme stage: Trouver la partie IDF **/
 
     val idf = new IDF().setInputCol("countVectorized").setOutputCol("tfidf")
 
-    //val idfModel = idf.fit(d)
-
-    //val tfidf = idfModel.transform(d)
+  /** 3. CONVERTIR LES CATEGORIES EN DONNEES NUMERIQUES : INDEXATION **/
 
         /** 5eme stage : Indexer les pays **/
 
@@ -94,7 +74,6 @@ object Trainer {
       .setInputCol("country2")
       .setOutputCol("country_indexed")
 
-    //val indexed = indexer.fit(tfidf).transform(tfidf)
 
         /** 6eme stage: Indexer les currencies **/
 
@@ -102,19 +81,16 @@ object Trainer {
       .setInputCol("currency2")
       .setOutputCol("currency_indexed")
 
-    //val indexed2 = indexer2.fit(indexed).transform(indexed)
+   /** 4. METTRE LES DONNEES SOUS UNE FORME UTILISABLE PAR SPARK.ML **/
 
-    /** VECTOR ASSEMBLER **/
+    	/** 7eme stage: Creation du vector assembler **/
 
     val assembler = new VectorAssembler()
       .setInputCols(Array("tfidf","days_campaign", "hours_prepa","goal","country_indexed","currency_indexed"))
       .setOutputCol("features")
 
-    //val output = assembler.transform(indexed2)
 
-    //output.select("features").show()
-
-    /** MODEL **/
+    	/** 8eme stage: Creation du modèle de classification **/
 
     val lr = new LogisticRegression()
       .setElasticNetParam(0.0)
@@ -129,18 +105,22 @@ object Trainer {
       .setMaxIter(300)
 
 
-    /** PIPELINE **/
+    	/** Creation de la PIPELINE **/
 
     val pipeline = new Pipeline()
       .setStages(Array(tokenizer, remover, cv, idf, indexer, indexer2, assembler, lr))
 
-    /** TRAINING AND GRID-SEARCH **/
+    /** 5. ENTRAINEMENT ET TUNING DU MODELE **/
+
+	/** Repartition des données en Training set et Test set**/
 
     val Array(trainingData, testData) = data.randomSplit(Array(0.9, 0.1))
 
+	/** Entraînement du classifieur et réglage des hyper-paramètres de l’algorithme **/
+
     val paramGrid = new ParamGridBuilder()
       .addGrid(cv.minDF,Array(55.0,75.0,95.0))
-      .addGrid(lr.regParam, Array(0.00000001, 0.000001,0.0001,0.01))
+      .addGrid(lr.regParam, Array(0.0000001, 0.00001,0.001,0.1))
       .build()
 
     val mce = new MulticlassClassificationEvaluator()
@@ -158,9 +138,8 @@ object Trainer {
 
 
     val model = trainValidationSplit.fit(trainingData)
-
-    // Make predictions on test data. model is the model with combination of parameters
-    // that performed best.
+	
+   	/** Tester le modèle obtenu sur les données test **/
 
     val df_WithPredictions = model.transform(testData)
 
@@ -170,6 +149,8 @@ object Trainer {
     df_WithPredictions.select("final_status","predictions").show()
 
     df_WithPredictions.groupBy("final_status", "predictions").count.show()
+
+	/** Sauvegarder le modèle entraîné pour pouvoir le réutiliser plus tard **/
 
     model.write.overwrite().save("myModel")
 
